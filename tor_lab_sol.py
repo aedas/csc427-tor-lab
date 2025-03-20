@@ -83,10 +83,10 @@ class Relay(EncryptorDecryptor):
             self.key = (A**b) % p
             reply_msg = composeExtendReplyMsg(B)
             # TODO: Send diffie-hellman reply message to previous hop
-            pass
+            self.send_payload(reply_msg, self.prev)
         elif sender == self.next:
             # TODO: Encrypt a layer and send it to previous hop
-            pass
+            self.send_payload(encrypt(msg, self.key), self.prev)
         elif sender == self.prev:
             decrypted_msg = decrypt(msg, self.key)
             # Or decrypted_msg.startswith(EXTEND_PREFIX)
@@ -97,12 +97,11 @@ class Relay(EncryptorDecryptor):
                     return
                 id, _, _, _= content
                 # TODO: Connect to next relay/hop
-                self.next = None
-
+                self.next = da.findRelay(id)
                 self.next.prev = self
             if self.next != server or not decrypted_msg.startswith(EXTEND_PREFIX):
                 # TODO: Send decrypted message to next hop
-                pass
+                self.send_payload(decrypted_msg, self.next)
 
 class Server(EncryptorDecryptor):
     """
@@ -172,7 +171,7 @@ class Client(EncryptorDecryptor):
 
             extend_msg = composeExtendMsg(self.tor_relays[1], self.p, g, A)
             # TODO: Send the next payload to extend the circuit
-            pass
+            self.send_payload(encrypt(extend_msg, self.k_entry), self.entry_relay)
         elif self.k_middle is None:
             self.k_middle = self.getKey(decrypt(msg, self.k_entry))
             if not self.k_entry:
@@ -181,7 +180,7 @@ class Client(EncryptorDecryptor):
             A=(g**self.a) % self.p
             extend_msg = composeExtendMsg(self.tor_relays[2], self.p, g, A)
             # TODO: Send the next payload to extend the circuit
-            pass
+            self.send_payload(encrypt(encrypt(extend_msg, self.k_middle),self.k_entry), self.entry_relay)
         elif self.k_exit is None:
             self.k_exit = self.getKey(decrypt(decrypt(msg, self.k_entry), self.k_middle))
             if not self.k_entry:
@@ -191,8 +190,7 @@ class Client(EncryptorDecryptor):
 
             extend_msg = composeExtendMsg(SERVER_ID, 0,0,0)
             # TODO: Send the next payload to connect the exit relay to the server
-            pass
-
+            self.send_payload(encrypt(encrypt(encrypt(extend_msg, self.k_exit), self.k_middle), self.k_entry), self.entry_relay)
             self.circuit_setup = True
 
     def sendToServer(self, msg):
@@ -215,7 +213,7 @@ class Client(EncryptorDecryptor):
         self.entry_relay = da.findRelay(self.tor_relays[0])
         self.entry_relay.prev = self
         # TODO: Start the circuit extension.
-        pass
+        self.send_payload(composeExtendMsg(self.tor_relays[0], self.p, g, A), self.entry_relay)
 
 
 da = DirectoryAuthoritiy()
