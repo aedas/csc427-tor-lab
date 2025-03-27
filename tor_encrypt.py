@@ -1,12 +1,12 @@
 
 import random
-from cryptography.fernet import Fernet
+from fernet import Fernet
 import random
 import base64
 
 
 """
-Fernet Key generator that uses Diffie-hellman keys as seed for simplicity.
+Fernet Key encryption that uses Diffie-hellman keys as seed for simplicity.
 
 References:
 - Prime Generation: https://codingfleet.com/transformation-details/implementing-diffie-hellman-key-exchange-algorithm-in-python/
@@ -29,7 +29,7 @@ def is_prime(n):
             return False
     return True
 
-def generateFernetKey(seed):
+def generate_fernet_key(seed):
     rng = random.Random(seed)
     return base64.urlsafe_b64encode(bytes([rng.randint(0, 255) for i in range(32)]))
 
@@ -37,7 +37,7 @@ def encrypt(payload, key):
     """
     Encrypts using diffie-hellman key as seed
     """
-    ret = Fernet(generateFernetKey(key)).encrypt(payload)
+    ret = Fernet(generate_fernet_key(key)).encrypt(payload)
     # print(b"Encrypt "+payload[:20]+b"... with key="+str(key).encode()+b" => "+ret[:20]+b"...")
     return ret
 
@@ -45,6 +45,6 @@ def decrypt(payload, key):
     """
     Decrypts using diffie-hellman key as seed
     """
-    ret = Fernet(generateFernetKey(key)).decrypt(payload)
+    ret = Fernet(generate_fernet_key(key)).decrypt(payload)
     # print(b"Decrypt "+payload[:20]+b"... with key="+str(key).encode()+b" => "+ret[:20]+b"...")
     return ret

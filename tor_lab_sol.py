@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from tor_encrypt import *
+from tor_encrypt import encrypt, decrypt, generate_prime_number
 
 EXTEND_PREFIX = b"EXTEND:" # EXTEND:id,p,g,A
 EXTEND_REPLY_PREFIX = b"EXTRPY:" # EXTRPY:B
@@ -7,22 +7,22 @@ SERVER_ID = -1
 CLIENT_ID = 0
 
 # Payload of command to extend circuit with diffie-hellman parameters
-def composeExtendMsg(id, p, g, A):
+def compose_extend_msg(id, p, g, A):
     return EXTEND_PREFIX + str.encode(str(id)+","+str(p)+","+str(g)+","+str(A))
 
 # Payload for diffie hellman reply handshake
-def composeExtendReplyMsg(B):
+def compose_extend_reply_msg(B):
     return EXTEND_REPLY_PREFIX + str.encode(str(B))
 
 
-def parseExtendMsg(msg):
+def parse_extend_msg(msg):
     if not msg.startswith(EXTEND_PREFIX):
         print("ERROR: Cannot parse extend message!")
         return
     content = msg[len(EXTEND_PREFIX):].split(b",")
     return [int(x) for x in content]
 
-def parseExtendReply(msg):
+def parse_extend_reply(msg):
     if not msg.startswith(EXTEND_REPLY_PREFIX):
         print("ERROR: Cannot parse extend reply message!")
         return
@@ -31,23 +31,28 @@ def parseExtendReply(msg):
 
 
 class DirectoryAuthoritiy:
+    """
+    Simple Directory Authority with list of relays.
+    """
     entry_relays = []
     middle_relays = []
     exit_relays = []
-    def maintainConsensus(self):
-        # Just reads a csv file and sets up network
+    def maintain_consensus(self):
+        """Consensus simplified"""
         self.entry_relays = [Relay(1), Relay(2)]
         self.middle_relays = [Relay(3), Relay(4)]
         self.exit_relays = [Relay(5), Relay(6)]
         pass
 
-    def findRelay(self, id):
+    def find_relay(self, id):
+        """Finds the relay with id, or the server is the server is provided"""
         # Directly connect to server (for exit relay)
         if id == SERVER_ID:
             return server
         return [relay for relay in self.entry_relays + self.middle_relays + self.exit_relays if relay.id == id][0]
 
-    def getCircuitIds(self):
+    def get_circuit_ids(self):
+        """Use these three relays for simplicity"""
         return [1,3,5]
 
 
@@ -70,38 +75,68 @@ class Relay(EncryptorDecryptor):
     prev = None
     next = None
     key = None
+
+    b = 0
+    B = 0
+
     def __init__(self, id):
         self.id = id
+
+    def generate_diff_hell_nums(self, p, g):
+        """Generate diffie-hellman primes and public key"""
+        self.b = generate_prime_number()
+        self.B = (g ** self.b) % p
+
+    def getKey(self, msg):
+        """Gets shared secret from client's public key"""
+        content = parse_extend_msg(msg)
+        if not content:
+                return None
+        _, p, g, A = content
+        self.generate_diff_hell_nums(p, g)
+        return (A**self.b) % p
+
     def receive(self, msg, sender):
+        """Handler for key-exchange or circuit extension"""
+
         if msg.startswith(EXTEND_PREFIX) and sender == self.prev:
-            content = parseExtendMsg(msg)
-            if not content:
-                return
-            id, p, g, A = content
-            b = generate_prime_number()
-            B = (g**b) % p
-            self.key = (A**b) % p
-            reply_msg = composeExtendReplyMsg(B)
+            self.key = self.getKey(msg)
+            reply_msg = compose_extend_reply_msg(self.B)
+
             # TODO: Send diffie-hellman reply message to previous hop
+            # Hint: No encryption needed
             self.send_payload(reply_msg, self.prev)
+
         elif sender == self.next:
-            # TODO: Encrypt a layer and send it to previous hop
-            self.send_payload(encrypt(msg, self.key), self.prev)
+
+            # TODO: Encrypt payload and send it to previous hop
+            encrypted_msg = encrypt(msg, self.key)
+            self.send_payload(encrypted_msg, self.prev)
+
         elif sender == self.prev:
             decrypted_msg = decrypt(msg, self.key)
+
             # Or decrypted_msg.startswith(EXTEND_PREFIX)
+
             # Case for circuit extension
             if self.next is None:
-                content = parseExtendMsg(decrypted_msg)
+                content = parse_extend_msg(decrypted_msg)
                 if not content:
                     return
-                id, _, _, _= content
+                next_id, _, _, _= content
+
                 # TODO: Connect to next relay/hop
-                self.next = da.findRelay(id)
+                self.next = authority.find_relay(next_id)
                 self.next.prev = self
+
             if self.next != server or not decrypted_msg.startswith(EXTEND_PREFIX):
+
                 # TODO: Send decrypted message to next hop
                 self.send_payload(decrypted_msg, self.next)
+            else:
+                # Drop the diffie-hellman exchange signal,
+                # As we do not do the exchange with the server
+                pass
 
 class Server(EncryptorDecryptor):
     """
@@ -110,7 +145,7 @@ class Server(EncryptorDecryptor):
     id = SERVER_ID
     def receive(self, msg, sender):
         print(b"SERVER received: "+msg)
-        self.send_payload(b"Welcome to CSC427", sender)
+        self.send_payload(b"Congrats for completing CSC427!!", sender)
 
 
 class Client(EncryptorDecryptor):
@@ -133,26 +168,27 @@ class Client(EncryptorDecryptor):
     # Diffie-hellman key exchange prime numbers
     a = 0
     p = 0
+    g = 0
+    A = 0
 
-    def getKey(self, msg):
-        """
-        Gets shared secret from Server's public key message
-        """
-        content = parseExtendReply(msg)
-        if not content:
-            return
-        B = content[0]
-        ret = (B**self.a) % self.p
-
-        # Different set of prime numbers for future diffie-hellman key exchanges
+    def generate_diff_hell_nums(self):
+        """Generate primes and public key for diffie-hellman key exchange"""
         self.p=generate_prime_number()
         self.a=generate_prime_number()
+        self.g=generate_prime_number()
+        self.A=(self.g**self.a) % self.p
+
+    def get_key(self, msg):
+        """Gets shared secret from Server's public key message"""
+        content = parse_extend_reply(msg)
+        if not content:
+            return None
+        B = content[0]
+        ret = (B**self.a) % self.p
         return ret
 
     def receive(self, msg, sender):
-        """
-        Displays decrypted message, or extend circuit if needed
-        """
+        """Displays decrypted message, or extend circuit if needed"""
         if not self.circuit_setup:
             self.extend_circuit(msg)
         else:
@@ -160,67 +196,88 @@ class Client(EncryptorDecryptor):
 
     def extend_circuit(self, msg):
         """
-        Circuit extension protocol. Code is split into cases for key exchanges with entry, middle and exit relays respectively.
+        Circuit extension protocol.
+        Code is split into cases for key exchanges with entry, middle and exit relays respectively.
         """
         if self.k_entry is None:
-            self.k_entry = self.getKey(msg)
+            # No encryption in first diffie-hellman exchange
+            self.k_entry = self.get_key(msg)
             if not self.k_entry:
                 return
-            g=generate_prime_number()
-            A=(g**self.a) % self.p
+            self.generate_diff_hell_nums()
 
-            extend_msg = composeExtendMsg(self.tor_relays[1], self.p, g, A)
-            # TODO: Send the next payload to extend the circuit
-            self.send_payload(encrypt(extend_msg, self.k_entry), self.entry_relay)
+            # Extend circuit to middle relay
+            extend_msg = compose_extend_msg(self.tor_relays[1], self.p, self.g, self.A)
+
+            # TODO: Send the encrypted payload to extend the circuit
+            encrypted_msg = encrypt(extend_msg, self.k_entry)
+            self.send_payload(encrypted_msg, self.entry_relay)
+
         elif self.k_middle is None:
-            self.k_middle = self.getKey(decrypt(msg, self.k_entry))
-            if not self.k_entry:
-                return
-            g=generate_prime_number()
-            A=(g**self.a) % self.p
-            extend_msg = composeExtendMsg(self.tor_relays[2], self.p, g, A)
-            # TODO: Send the next payload to extend the circuit
-            self.send_payload(encrypt(encrypt(extend_msg, self.k_middle),self.k_entry), self.entry_relay)
-        elif self.k_exit is None:
-            self.k_exit = self.getKey(decrypt(decrypt(msg, self.k_entry), self.k_middle))
-            if not self.k_entry:
-                return
-            g=generate_prime_number()
-            A=(g**self.a) % self.p
+            # TODO: Decrypt the message
+            decrypted_msg = decrypt(msg, self.k_entry)
 
-            extend_msg = composeExtendMsg(SERVER_ID, 0,0,0)
-            # TODO: Send the next payload to connect the exit relay to the server
-            self.send_payload(encrypt(encrypt(encrypt(extend_msg, self.k_exit), self.k_middle), self.k_entry), self.entry_relay)
+            self.k_middle = self.get_key(decrypted_msg)
+            if not self.k_entry:
+                return
+            self.generate_diff_hell_nums()
+
+            # Extend circuit to exit relay
+            extend_msg = compose_extend_msg(self.tor_relays[2], self.p, self.g, self.A)
+
+            # TODO: Send the next payload to extend the circuit
+            encrypted_msg = encrypt(encrypt(extend_msg, self.k_middle),self.k_entry)
+            self.send_payload(encrypted_msg, self.entry_relay)
+
+        elif self.k_exit is None:
+
+            # TODO: Decrypt the message
+            decrypted_msg = decrypt(decrypt(msg, self.k_entry), self.k_middle)
+
+            self.k_exit = self.get_key(decrypted_msg)
+            if not self.k_entry:
+                return
+
+            # No diffie-hellman is done here, message to connect the exit relay to the server
+            extend_msg = compose_extend_msg(SERVER_ID, 0,0,0)
+
+            # TODO: Send encrypted payload to connect the exit relay to the server
+            encrypted_msg = encrypt(encrypt(encrypt(extend_msg, self.k_exit), self.k_middle), self.k_entry)
+            self.send_payload(encrypted_msg, self.entry_relay)
+
             self.circuit_setup = True
 
-    def sendToServer(self, msg):
+    def send_to_server(self, msg):
         """Function called by end user to access the server once the TOR circuit is set-up"""
         if not self.circuit_setup:
             print("ERROR: TOR circuit not set up properly!")
         else:
-            self.send_payload(encrypt(encrypt(encrypt(msg, self.k_exit), self.k_middle), self.k_entry), self.entry_relay)
 
-    def selectTorRelays(self):
-        self.tor_relays = da.getCircuitIds()
+            # TODO: Sends full onion payload to the guard relay
+            onion_payload = encrypt(encrypt(encrypt(msg, self.k_exit), self.k_middle), self.k_entry)
+            self.send_payload(onion_payload, self.entry_relay)
 
-    def setupTorCircuit(self):
+    def select_tor_relays(self):
+        """Choose 3 relays from the directory authority"""
+        self.tor_relays = authority.get_circuit_ids()
+
+    def setup_tor_circuit(self):
         if self.circuit_setup:
             print("ERROR: TOR circuit already set up!")
-        self.p=generate_prime_number()
-        g=generate_prime_number()
-        self.a=generate_prime_number()
-        A=(g**self.a) % self.p
-        self.entry_relay = da.findRelay(self.tor_relays[0])
+
+        self.generate_diff_hell_nums()
+        self.entry_relay = authority.find_relay(self.tor_relays[0])
         self.entry_relay.prev = self
+        extend_msg = compose_extend_msg(self.tor_relays[0], self.p, self.g, self.A)
+
         # TODO: Start the circuit extension.
-        self.send_payload(composeExtendMsg(self.tor_relays[0], self.p, g, A), self.entry_relay)
+        self.send_payload(extend_msg, self.entry_relay)
 
 
-da = DirectoryAuthoritiy()
-da.maintainConsensus()
+authority = DirectoryAuthoritiy()
+authority.maintain_consensus()
 server = Server()
 client = Client()
-client.selectTorRelays()
-client.setupTorCircuit()
-client.sendToServer(b"Hello Andi")
-client.sendToServer(input("Type anything to server: ").encode())
+client.select_tor_relays()
+client.setup_tor_circuit()
+client.send_to_server(b"Hello Andi")
